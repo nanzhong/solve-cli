@@ -1,0 +1,143 @@
+#!/usr/bin/env ruby
+require 'net/http'
+require 'uri'
+require 'json'
+
+API = 'http://solve.enflick.com'
+CONFIG_PATH = File.expand_path('~/.solverc')
+
+def print_usage
+  puts "Usage: solve <command> ...\n\n"
+  puts "register <username> <email>\t\tRegister a new solve account"
+  puts "link <username> <api_key>\t\tLink an existing solve account"
+  puts "key\t\t\t\t\tShow your api key"
+  puts "login\t\t\t\t\tLogin to site"
+  puts "problem <problem_id> <language> [file]\tSubmit a solution to a problem (code for the solution is expected in STDIN or as a file path on command line)"
+  exit
+end
+
+if ARGV.count == 0
+  print_usage
+  exit
+end
+
+command = ARGV.shift
+if !['register', 'link', 'key', 'login', 'problem'].include?(command)
+  puts "Unknown command '#{command}'"
+  print_usage
+end
+
+api_key = nil
+if File.exists?(CONFIG_PATH)
+  api_key = File.read(CONFIG_PATH).strip
+  unless api_key.empty?
+    res = Net::HTTP.get_response(URI("#{API}/users/key/#{api_key}"))
+    if res.code.to_i != 200
+      puts "The configured account does not exist, resetting configuration"
+      puts "Currently configured api key: #{api_key}"
+      puts "Please link a valid account or register another account"
+      File.delete(CONFIG_PATH)
+      exit
+    end
+  end
+end
+
+if (api_key.nil? || api_key.empty?) && !['register', 'link'].include?(command)
+  puts 'You do not appear to have a solve account configured.'
+  puts 'To register an account:'
+  puts 'solve register <username> <email>'
+  puts 'To link an existing account:'
+  puts 'solve link <username> <api_key>'
+  exit
+end
+
+case command
+when 'key'
+  puts "Your API key: #{api_key}"
+when 'login'
+  `open #{API}/users/login_cli?api_key=#{api_key}`
+when 'problem'
+  unless ARGV.count >= 2
+    puts "Invalid command"
+    puts "Usage: solve problem <problem_id> <language> [file]"
+    exit
+  end
+
+  problem_id = ARGV.shift
+  language = ARGV.shift
+
+  code = ARGF.read
+
+  uri = URI("#{API}/problems/#{problem_id}/solutions.json")
+  req = Net::HTTP::Post.new uri, {
+    'Content-Type' => 'application/json',
+    'Accept' => 'application/json'
+  }
+
+  req.body = {
+    'api_key' => api_key,
+    'solution' => {
+      'language' => language,
+      'code' => code
+    }
+  }.to_json
+
+  res = Net::HTTP.start(uri.host, uri.port) do |http|
+    http.request req
+  end
+
+  case res.code.to_i
+  when 201
+    puts "Submitted solution, and queued to test"
+  when 500
+    puts "Error processing request"
+  else
+    puts JSON.parse(res.body)['error']
+  end
+when 'link'
+  unless ARGV.count == 2
+    puts "Invalid Command"
+    puts "Usage: solve link <username> <api_key>"
+    exit
+  end
+
+  File.open(CONFIG_PATH, 'w') do |f|
+    f.write ARGV[1]
+  end
+when 'register'
+  unless ARGV.count == 2
+    puts "Invalid command"
+    puts "Usage: solve register <username> <email>"
+    exit
+  end
+
+  username = ARGV.shift
+  email =ARGV.shift
+
+  uri = URI("#{API}/users.json")
+  req = Net::HTTP::Post.new uri, {
+    'Content-Type' => 'application/json',
+    'Accept' => 'application/json'
+  }
+
+  req.body = {
+    'user' => {
+      'username' => username,
+      'email' => email
+    }
+  }.to_json
+
+  res = Net::HTTP.start(uri.host, uri.port) do |http|
+    http.request req
+  end
+
+  if res.code.to_i != 201
+    puts "Error registering..."
+  else
+    res = JSON.parse(res.body)
+
+    File.open(CONFIG_PATH, 'w') do |f|
+      f.write res['api_key']
+    end
+  end
+end
